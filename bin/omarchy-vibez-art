@@ -1,0 +1,143 @@
+#!/usr/bin/bash
+# Fetch cover art to the cache and print a file:// URL for it.
+#
+# vibez publishes mpris:artUrl as a remote https URL on Apple's artwork CDN
+# (internal/provider/apple/apple.go builds it from the catalog response at
+# 300x300). Handing that straight to a QML Image would make the bar itself
+# fetch an address that arrived as metadata, which is exactly what the shell
+# should never do. So the fetch happens here, out of process, against an
+# allow-list, and the shell only ever reads a local file it owns.
+#
+# Caching is the side benefit: artwork is per album, so a listening session
+# resolves a handful of URLs and re-reads them for free.
+
+set -uo pipefail
+umask 077
+export LC_ALL=C
+
+# Absolute paths throughout. This process fetches a remote resource, so a
+# curl or head earlier on a prepended PATH would see the request and the
+# response body.
+CURL=/usr/bin/curl
+HEAD=/usr/bin/head
+OD=/usr/bin/od
+TR=/usr/bin/tr
+MKTEMP=/usr/bin/mktemp
+MV=/usr/bin/mv
+RM=/usr/bin/rm
+FIND=/usr/bin/find
+SORT=/usr/bin/sort
+CUT=/usr/bin/cut
+SHA256SUM=/usr/bin/sha256sum
+CHMOD=/usr/bin/chmod
+STAT=/usr/bin/stat
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-vibez/art"
+MAX_BYTES=3000000
+KEEP=60
+
+url="${1:-}"
+[[ -n $url && $# -eq 1 ]] || exit 1
+[[ ${#url} -le 2048 ]] || exit 1
+
+# A URL is one line. A newline in it would split into a second curl argument
+# or a second header line further down any pipeline this feeds.
+case $url in
+*[$'\r\n\t']* | *' '*) exit 1 ;;
+esac
+
+# The authority is the text between the scheme and the first slash, so a host
+# that merely contains an allowed name later in the URL cannot pass, and any
+# userinfo (https://is1-ssl.mzstatic.com@example.net/) is rejected outright
+# rather than parsed. Only Apple's artwork CDN is allowed: vibez has one
+# provider, and a URL from anywhere else is not artwork we asked for.
+case $url in
+https://*) ;;
+*) exit 1 ;;
+esac
+authority=${url#https://}
+authority=${authority%%/*}
+case $authority in
+*[@\?\#:]* | "") exit 1 ;;
+esac
+case $authority in
+*.mzstatic.com) ;;
+*) exit 1 ;;
+esac
+
+# The cache is plugin-owned and must stay that way. The repair is
+# unconditional: a directory that is 0700 today can still hold entries from a
+# wider-moded past, and a symlink planted on one of our fixed cache names
+# would send every later write to a file someone else chose. Anything that is
+# not a regular file goes, every time, before a single path here is used.
+# find uses lstat, so a symlink is -type l and never -type f.
+harden_cache() {
+  [[ -L $CACHE_DIR ]] && exit 1
+  /usr/bin/mkdir -p -m 700 -- "$CACHE_DIR" || exit 1
+  [[ -d $CACHE_DIR && ! -L $CACHE_DIR ]] || exit 1
+  [[ $($STAT -c '%u' -- "$CACHE_DIR" 2>/dev/null) == "$(/usr/bin/id -u)" ]] || exit 1
+  $CHMOD 700 -- "$CACHE_DIR" 2>/dev/null
+  $FIND "$CACHE_DIR" -mindepth 1 -maxdepth 1 ! -type f -exec $RM -rf -- {} + 2>/dev/null
+  $FIND "$CACHE_DIR" -mindepth 1 -maxdepth 1 -type f -exec $CHMOD 600 -- {} + 2>/dev/null
+  return 0
+}
+harden_cache
+
+key=$(printf '%s' "$url" | $SHA256SUM | $CUT -d' ' -f1)
+[[ $key =~ ^[0-9a-f]{64}$ ]] || exit 1
+target="$CACHE_DIR/$key"
+
+# -f and not -L, after the repair above removed anything that was not a
+# regular file. A cache hit is the common case and costs no network at all.
+if [[ -f $target && ! -L $target && -s $target ]]; then
+  printf 'file://%s\n' "$target"
+  exit 0
+fi
+
+tmp=$($MKTEMP "$CACHE_DIR/.fetch.XXXXXXXXXX") || exit 1
+trap '$RM -f -- "$tmp"' EXIT
+
+# -q first, or ~/.curlrc could add a second URL or a redirect of its own.
+# Redirects are not followed: allow-listing the host of the first request is
+# worth little if the server can then send the fetch anywhere it likes,
+# including back at something on this machine. --max-filesize acts on a
+# declared Content-Length and does nothing for a chunked body, so the real
+# ceiling is the head -c below and the length check after it.
+$CURL -q --silent --show-error --fail \
+  --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --no-location \
+  --noproxy '*' \
+  --connect-timeout 5 \
+  --max-time 10 \
+  --max-filesize "$MAX_BYTES" \
+  -- "$url" 2>/dev/null | $HEAD -c $((MAX_BYTES + 1)) >"$tmp"
+rc=${PIPESTATUS[0]}
+[[ $rc -eq 0 ]] || exit 1
+
+size=$($STAT -c '%s' -- "$tmp" 2>/dev/null) || exit 1
+[[ $size -gt 0 && $size -le $MAX_BYTES ]] || exit 1
+
+# Content-Type is the server's claim about the bytes; the magic number is the
+# bytes themselves. An Image asked to render something that is not an image
+# fails silently, and the panel would show an empty frame with no reason for it.
+magic=$($HEAD -c 12 -- "$tmp" | $OD -An -tx1 -v | $TR -d ' \n')
+case $magic in
+ffd8ff*) ;;                   # JPEG
+89504e470d0a1a0a*) ;;         # PNG
+52494646????????57454250*) ;; # RIFF....WEBP
+*) exit 1 ;;
+esac
+
+# rename(2) replaces a symlink at the destination rather than writing through
+# it, and the temporary was created fresh and exclusively in this directory.
+$MV -f -T -- "$tmp" "$target" || exit 1
+trap - EXIT
+
+# Bounded rather than pruned on a schedule: a few hundred kilobytes per album
+# adds up over months, and nothing else would ever clear it. The listing is
+# capped so a cache someone else filled cannot make this hold everything.
+mapfile -t -n 4000 stale < <($FIND "$CACHE_DIR" -mindepth 1 -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null |
+  $SORT -rn | /usr/bin/tail -n +$((KEEP + 1)) | $CUT -d' ' -f2-)
+((${#stale[@]})) && $RM -f -- "${stale[@]}"
+
+printf 'file://%s\n' "$target"

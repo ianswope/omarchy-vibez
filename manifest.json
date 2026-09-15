@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "ianswope.vibez",
+  "name": "vibez",
+  "version": "0.1.0",
+  "author": "Ian Swope",
+  "license": "MIT",
+  "description": "Now playing and transport for vibez, the TUI Apple Music player, in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "vibez",
+    "description": "Track, artwork, progress and transport for vibez, read from the MPRIS player it publishes. Shuffle, repeat and scrubbing included.",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showTrackInBar": true,
+      "maxBarChars": 28,
+      "showArtwork": true
+    },
+    "schema": [
+      {
+        "key": "showTrackInBar",
+        "type": "boolean",
+        "label": "Show the track beside the bar icon",
+        "defaultValue": true
+      },
+      {
+        "key": "maxBarChars",
+        "type": "integer",
+        "label": "Characters of track text in the bar",
+        "min": 8,
+        "max": 80,
+        "step": 2,
+        "defaultValue": 28
+      },
+      {
+        "key": "showArtwork",
+        "type": "boolean",
+        "label": "Show album artwork in the panel",
+        "defaultValue": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,100 @@
+#!/usr/bin/bash
+# Focus the vibez window, or start one.
+#
+# vibez is a TUI, so "the window" is a terminal running it, and the plugin can
+# only recognise the terminals it started itself: those carry the app-id passed
+# to xdg-terminal-exec. That is the whole reason this is not a call to
+# omarchy-launch-or-focus-tui, which matches a window pattern against the class
+# *or the title*. On this machine a terminal editing the vibez source, or a shell
+# sitting in ~/Projects/vibez, puts "vibez" in its own title and would be focused
+# instead of the player. The class is the only field we set, so it is the only
+# field matched, and it is matched whole rather than as a substring.
+
+set -uo pipefail
+export LC_ALL=C
+
+# Absolute paths: this script decides which binary is launched as the music
+# player, so a vibez, hyprctl or jq earlier on a prepended PATH would choose it.
+HYPRCTL=/usr/bin/hyprctl
+JQ=/usr/bin/jq
+BUSCTL=/usr/bin/busctl
+AWK=/usr/bin/awk
+SETSID=/usr/bin/setsid
+
+APP_ID="org.omarchy.vibez"
+BUS="org.mpris.MediaPlayer2.vibez"
+
+die() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+
+[[ -x $HYPRCTL ]] || die "hyprctl is required"
+[[ -x $JQ ]] || die "jq is required"
+
+# Quickshell is started from the user session, whose PATH is not the PATH of an
+# interactive shell. vibez installs to ~/.local/bin, which is on that PATH here
+# but is not guaranteed to be on anyone else's, so the binary is resolved by
+# looking rather than assumed, and passed on by absolute path.
+find_vibez() {
+  local candidate
+  if [[ -n ${OMARCHY_VIBEZ_BIN:-} ]]; then
+    [[ -x $OMARCHY_VIBEZ_BIN ]] || die "OMARCHY_VIBEZ_BIN=$OMARCHY_VIBEZ_BIN is not executable"
+    printf '%s\n' "$OMARCHY_VIBEZ_BIN"
+    return 0
+  fi
+  # A fixed list rather than PATH: PATH is inherited from the session and a
+  # same-user process can prepend to it, and this is the binary that gets run.
+  for candidate in "$HOME/.local/bin/vibez" /usr/local/bin/vibez /usr/bin/vibez; do
+    if [[ -x $candidate ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Exact class match. test() would read the dots in the app-id as wildcards and
+# the id as a substring of a longer class; neither is wanted when the whole
+# point is to find one specific window.
+window_address() {
+  $HYPRCTL clients -j 2>/dev/null | $JQ -r --arg id "$APP_ID" '
+    [ .[] | select(.class == $id) ] | (.[0].address // empty)
+  '
+}
+
+bus_owned() {
+  [[ -x $BUSCTL ]] || return 1
+  $BUSCTL --user list --no-pager --no-legend 2>/dev/null |
+    $AWK -v want="$BUS" '$1 == want { found = 1 } END { exit !found }'
+}
+
+address=$(window_address)
+if [[ -n $address ]]; then
+  $HYPRCTL dispatch "hl.dsp.focus({ window = \"address:$address\" })" >/dev/null 2>&1 ||
+    $HYPRCTL dispatch focuswindow "address:$address" >/dev/null 2>&1
+  echo "Focusing vibez"
+  exit 0
+fi
+
+# A second vibez starts and runs, but loses the race for the MPRIS bus name and
+# then publishes nothing at all, so the bar would go quiet while music kept
+# playing. When the name is already owned and none of our windows hold it, the
+# honest answer is to say where it is rather than to start a rival.
+if bus_owned; then
+  echo "vibez is already running in a terminal this plugin did not start"
+  exit 0
+fi
+
+vibez_bin=$(find_vibez) || die "vibez is not installed (looked in ~/.local/bin, /usr/local/bin and /usr/bin)"
+
+if [[ -x /usr/share/omarchy/bin/omarchy-launch-tui ]]; then
+  $SETSID /usr/share/omarchy/bin/omarchy-launch-tui --app-id="$APP_ID" "$vibez_bin" >/dev/null 2>&1 &
+elif [[ -x /usr/bin/uwsm-app ]]; then
+  $SETSID /usr/bin/uwsm-app -- xdg-terminal-exec --app-id="$APP_ID" -e "$vibez_bin" >/dev/null 2>&1 &
+else
+  $SETSID /usr/bin/xdg-terminal-exec --app-id="$APP_ID" -e "$vibez_bin" >/dev/null 2>&1 &
+fi
+
+disown 2>/dev/null
+echo "Opening vibez…"
