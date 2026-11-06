@@ -66,29 +66,20 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    slotSize: Style.bar.iconSlot + (root.labelVisible ? labelMetrics.width + Style.space(3) : 0)
+    // The title is the button's own label, not part of the icon component.
+    // An icon component is scaled to fit Style.bar.iconSize on its longest
+    // side, so a title inside one drags the note icon down to a fraction of
+    // its size along with the text: the bar then reserved a wide slot and
+    // painted a one-pixel smudge in it. The label is rendered outside that
+    // canvas, at the bar's own font size.
+    labelText: root.labelVisible ? music.barLabel : ""
+    slotSize: Style.bar.iconSlot + (root.labelVisible ? labelMetrics.width + Style.space(4) : 0)
     iconComponent: Component {
       Item {
-        Row {
+        NoteIcon {
           anchors.centerIn: parent
-          spacing: Style.space(3)
-
-          NoteIcon {
-            anchors.verticalCenter: parent.verticalCenter
-            iconSize: Style.space(11)
-            color: root.barIconColor
-          }
-
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.labelVisible
-            text: music.barLabel
-            textFormat: Text.PlainText
-            color: root.barIconColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.bar.iconFont
-            renderType: Text.NativeRendering
-          }
+          iconSize: Style.space(11)
+          color: root.barIconColor
         }
       }
     }
