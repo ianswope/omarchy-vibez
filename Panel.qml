@@ -23,7 +23,8 @@ Panel {
   // Dimmed while vibez is not running, so the bar says at a glance whether
   // there is anything to control.
   readonly property color barIconColor: music.running ? barForeground : Qt.darker(barForeground, 1.7)
-  readonly property bool labelVisible: music.barLabel !== ""
+  // A vertical bar is one icon wide. The title would paint outside it.
+  readonly property bool showBarLabel: music.barLabel !== "" && !(bar && bar.vertical)
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -55,47 +56,43 @@ Panel {
     function launch(): string { music.open(); return "ok" }
   }
 
-  TextMetrics {
-    id: labelMetrics
-    font.family: root.fontFamily
-    font.pixelSize: Style.bar.iconFont
-    text: music.barLabel
-  }
-
-  BarIconButton {
+  // WidgetButton rather than BarIconButton. The icon slot measures whatever
+  // it holds and scales that down to Style.bar.iconSize, about 12px. A note
+  // drawn beside a title becomes a speck in the middle of a wide empty slot.
+  WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    slotSize: Style.bar.iconSlot + (root.labelVisible ? labelMetrics.width + Style.space(3) : 0)
-    iconComponent: Component {
-      Item {
-        Row {
-          anchors.centerIn: parent
-          spacing: Style.space(3)
-
-          NoteIcon {
-            anchors.verticalCenter: parent.verticalCenter
-            iconSize: Style.space(11)
-            color: root.barIconColor
-          }
-
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            visible: root.labelVisible
-            text: music.barLabel
-            textFormat: Text.PlainText
-            color: root.barIconColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.bar.iconFont
-            renderType: Text.NativeRendering
-          }
-        }
-      }
-    }
-    // Right click is the one control worth having without opening anything.
+    labelVisible: false
+    hasVisualContent: true
+    fixedWidth: vertical ? -1 : barContent.implicitWidth + scaledHorizontalMargin * 2
+    fixedHeight: vertical ? Style.bar.iconSlot : -1
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) music.playPause()
       else root.toggle()
+    }
+
+    Row {
+      id: barContent
+      anchors.centerIn: parent
+      spacing: Style.space(4)
+
+      NoteIcon {
+        anchors.verticalCenter: parent.verticalCenter
+        iconSize: Style.bar.iconSize
+        color: root.barIconColor
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: root.showBarLabel
+        text: music.barLabel
+        textFormat: Text.PlainText
+        color: root.barIconColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.bar.iconFont
+        renderType: Text.NativeRendering
+      }
     }
   }
 
